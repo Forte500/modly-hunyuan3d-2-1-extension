@@ -1,0 +1,99 @@
+{
+  "id": "hunyuan3d-2-1",
+  "name": "Hunyuan3D 2.1",
+  "type": "model",
+  "source": "https://github.com/lightningpixel/modly-hunyuan3d-2-1-extension",
+  "description": "Tencent Hunyuan3D 2.1 — full image-to-3D pipeline with production-ready PBR material generation. Higher quality than the Mini variant; requires significantly more VRAM (~10 GB shape, ~21 GB PBR texture).",
+  "version": "1.0.0",
+  "author": "Lightning Pixel",
+  "generator_class": "Hunyuan3D21Generator",
+  "tags": ["image-to-3d", "texture", "pbr", "high-vram"],
+  "nodes": [
+    {
+      "id": "generate",
+      "name": "Generate Mesh",
+      "input": "image",
+      "output": "mesh",
+      "hf_repo": "tencent/Hunyuan3D-2.1",
+      "download_check": "hunyuan3d-dit-v2-1",
+      "hf_skip_prefixes": [
+        "hunyuan3d-paintpbr-v2-1/"
+      ],
+      "params_schema": [
+        {
+          "id": "num_inference_steps",
+          "label": "Quality",
+          "type": "select",
+          "default": 30,
+          "options": [
+            { "value": 10, "label": "Fast" },
+            { "value": 30, "label": "Balanced" },
+            { "value": 50, "label": "High" }
+          ],
+          "tooltip": "Number of diffusion steps. More steps = better quality but slower."
+        },
+        {
+          "id": "octree_resolution",
+          "label": "Mesh Resolution",
+          "type": "select",
+          "default": 380,
+          "options": [
+            { "value": 256, "label": "Low" },
+            { "value": 380, "label": "Medium" },
+            { "value": 512, "label": "High" }
+          ],
+          "tooltip": "Octree resolution for mesh reconstruction. Higher = more detail but slower and more VRAM."
+        },
+        {
+          "id": "guidance_scale",
+          "label": "Guidance Scale",
+          "type": "float",
+          "default": 5.0,
+          "min": 1.0,
+          "max": 10.0,
+          "step": 0.5,
+          "tooltip": "Classifier-free guidance strength. Higher = closer to the input image."
+        },
+        {
+          "id": "enable_texture",
+          "label": "Generate PBR Texture",
+          "type": "bool",
+          "default": false,
+          "tooltip": "Generate physically-based (PBR) materials. Greatly increases quality but needs ~21 GB VRAM and the compiled texture extensions."
+        },
+        {
+          "id": "texture_num_view",
+          "label": "Texture Views",
+          "type": "select",
+          "default": 6,
+          "options": [
+            { "value": 6, "label": "6 (faster)" },
+            { "value": 8, "label": "8" },
+            { "value": 9, "label": "9 (best)" }
+          ],
+          "tooltip": "Number of multi-view renders used for PBR texture synthesis. Only used when PBR texture is enabled."
+        },
+        {
+          "id": "texture_resolution",
+          "label": "Texture Resolution",
+          "type": "select",
+          "default": 512,
+          "options": [
+            { "value": 512, "label": "512" },
+            { "value": 768, "label": "768" }
+          ],
+          "tooltip": "Multi-view render resolution for PBR texture synthesis. Only used when PBR texture is enabled."
+        },
+        {
+          "id": "seed",
+          "label": "Seed",
+          "type": "int",
+          "default": -1,
+          "min": -1,
+          "max": 4294967295,
+          "tooltip": "Seed for reproducibility. Set to -1 for a random seed."
+        }
+      ]
+    }
+  ]
+}
