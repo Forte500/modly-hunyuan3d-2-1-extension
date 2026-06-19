@@ -57,8 +57,12 @@
         {
           "id": "enable_texture",
           "label": "Generate PBR Texture",
-          "type": "bool",
+          "type": "select",
           "default": false,
+          "options": [
+            { "value": false, "label": "False" },
+            { "value": true, "label": "True" }
+          ],
           "tooltip": "Generate physically-based (PBR) materials. Greatly increases quality but needs ~21 GB VRAM and the compiled texture extensions."
         },
         {

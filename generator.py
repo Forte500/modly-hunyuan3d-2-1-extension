@@ -119,7 +119,11 @@ class Hunyuan3D21Generator(BaseGenerator):
 
         num_steps      = int(params.get("num_inference_steps", 30))
         vert_count     = int(params.get("vertex_count", 0))
-        enable_texture = bool(params.get("enable_texture", False))
+        # `enable_texture` comes from a True/False select, which may arrive as a
+        # bool, an int, or a string ("true"/"false") depending on the UI — parse
+        # robustly (note: bool("false") is True, so a plain bool() won't do).
+        _tex_raw = params.get("enable_texture", False)
+        enable_texture = _tex_raw in (True, 1, "1", "true", "True", "yes", "on")
         octree_res     = int(params.get("octree_resolution", 380))
         guidance_scale = float(params.get("guidance_scale", 5.0))
         seed           = int(params.get("seed", -1))
@@ -419,8 +423,12 @@ class Hunyuan3D21Generator(BaseGenerator):
             {
                 "id":      "enable_texture",
                 "label":   "Generate PBR Texture",
-                "type":    "bool",
+                "type":    "select",
                 "default": False,
+                "options": [
+                    {"value": False, "label": "False"},
+                    {"value": True,  "label": "True"},
+                ],
                 "tooltip": "Generate physically-based (PBR) materials. Needs ~21 GB VRAM and the compiled texture extensions.",
             },
             {
