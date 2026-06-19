@@ -258,6 +258,15 @@ class Hunyuan3D21Generator(BaseGenerator):
         self._report(progress_cb, 74, "Loading PBR texture model…")
         from textureGenPipeline import Hunyuan3DPaintPipeline, Hunyuan3DPaintConfig
 
+        # basicsr (pulled in by realesrgan when the paint pipeline loads its
+        # models) imports torchvision.transforms.functional_tensor, removed in
+        # torchvision>=0.17. hy3dpaint ships a shim — install it before loading.
+        try:
+            from utils.torchvision_fix import apply_fix as _tv_fix
+            _tv_fix()
+        except Exception as exc:
+            print(f"[Hunyuan3D21Generator] torchvision_fix unavailable: {exc}")
+
         paint_root = self.model_dir / _VENDOR_DIR_NAME / "hy3dpaint"
 
         conf = Hunyuan3DPaintConfig(num_view, resolution)
