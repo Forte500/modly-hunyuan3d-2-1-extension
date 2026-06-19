@@ -39,6 +39,40 @@ _REALESRGAN_URL  = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.
 # Folders vendored from the 2.1 GitHub repo into the model dir.
 _VENDOR_DIR_NAME = "_hy3d21"
 
+# Source patches required to build the native PBR texture extensions and to keep
+# the paint pipeline importable. The C++ ones fix MSVC strictness that g++/Linux
+# tolerates; the mesh_utils one makes `bpy` optional in-process. Applied
+# idempotently (paths are relative to the vendored `hy3dpaint` dir).
+_CR_KERNEL = "custom_rasterizer/lib/custom_rasterizer_kernel/"
+_NATIVE_PATCHES = {
+    # bpy clashes with torch/CUDA DLLs once loaded in-process → make it optional
+    # (obj->glb runs in a clean subprocess instead).
+    "DifferentiableRenderer/mesh_utils.py": [
+        ("import os\nimport cv2\nimport bpy\nimport math\nimport numpy as np",
+         "import os\nimport cv2\ntry:\n    import bpy\nexcept Exception:\n    bpy = None\nimport math\nimport numpy as np"),
+    ],
+    # C2398: narrowing size_t -> int64 inside torch::zeros({...}) brace-init.
+    # LNK2001: Windows `long` is 32-bit; torch only instantiates data_ptr<int64_t>.
+    _CR_KERNEL + "grid_neighbor.cpp": [
+        ("torch::zeros({seq2pos.size() / 3, 3}", "torch::zeros({(int64_t)(seq2pos.size() / 3), 3}"),
+        ("torch::zeros({seq2pos.size() / 3}", "torch::zeros({(int64_t)(seq2pos.size() / 3)}"),
+        ("torch::zeros({seq2feat.size() / feat_channel, feat_channel}", "torch::zeros({(int64_t)(seq2feat.size() / feat_channel), feat_channel}"),
+        ("torch::zeros({grids[i].seq2grid.size(), 9}", "torch::zeros({(int64_t)grids[i].seq2grid.size(), 9}"),
+        ("torch::zeros({grids[i].seq2evencorner.size()}", "torch::zeros({(int64_t)grids[i].seq2evencorner.size()}"),
+        ("torch::zeros({grids[i].seq2oddcorner.size()}", "torch::zeros({(int64_t)grids[i].seq2oddcorner.size()}"),
+        ("torch::zeros({grids[i].downsample_seq.size()}", "torch::zeros({(int64_t)grids[i].downsample_seq.size()}"),
+        ("long* nptr =", "int64_t* nptr ="),
+        ("long* dptr =", "int64_t* dptr ="),
+        (".data_ptr<long>()", ".data_ptr<int64_t>()"),
+    ],
+    _CR_KERNEL + "rasterizer.cpp": [
+        (".data_ptr<long>()", ".data_ptr<int64_t>()"),
+    ],
+    _CR_KERNEL + "rasterizer_gpu.cu": [
+        (".data_ptr<long>()", ".data_ptr<int64_t>()"),
+    ],
+}
+
 
 class Hunyuan3D21Generator(BaseGenerator):
     MODEL_ID     = "hunyuan3d-2-1"
@@ -235,60 +269,237 @@ class Hunyuan3D21Generator(BaseGenerator):
         work = Path(tempfile.mkdtemp(prefix="hy3d21_paint_"))
         in_mesh  = work / "shape.glb"
         in_image = work / "cond.png"
-        out_mesh = work / "textured.glb"
+        out_obj  = work / "textured.obj"
+        out_glb  = work / "textured.glb"
         try:
             mesh.export(str(in_mesh))
             image.save(str(in_image))
 
             self._report(progress_cb, 80, "Generating PBR textures…")
             with torch.no_grad():
+                # save_glb=False: the in-process obj->glb path imports bpy, whose
+                # bundled DLLs clash with torch/CUDA in this process. We export an
+                # OBJ (+ PBR textures) and convert to GLB in a clean subprocess.
                 result_path = paint_pipeline(
                     mesh_path=str(in_mesh),
                     image_path=str(in_image),
-                    output_mesh_path=str(out_mesh),
+                    output_mesh_path=str(out_obj),
+                    save_glb=False,
                 )
+            obj_path = Path(result_path) if result_path else out_obj
 
-            textured = trimesh.load(str(result_path or out_mesh), force="mesh")
+            self._report(progress_cb, 92, "Packing PBR materials (GLB)…")
+            textured = self._obj_to_glb(obj_path, out_glb)
         finally:
             del paint_pipeline
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             elif torch.backends.mps.is_available():
                 torch.mps.empty_cache()
-            # Read the result before cleaning up the temp dir.
-            for f in (in_mesh, in_image):
-                try:
-                    f.unlink()
-                except OSError:
-                    pass
+            try:
+                in_image.unlink()
+            except OSError:
+                pass
 
         return textured
 
+    def _obj_to_glb(self, obj_path: Path, glb_path: Path):
+        """Convert the textured OBJ to a PBR GLB and return it as a trimesh.
+
+        Uses Blender (bpy) via Hunyuan's `convert_obj_to_glb` to preserve the full
+        PBR material (base color + metallic-roughness). bpy is run in a fresh
+        subprocess because its native DLLs conflict with an already-loaded
+        torch/CUDA in the main process. Falls back to a plain trimesh load (base
+        color only) if the subprocess conversion is unavailable.
+        """
+        import subprocess
+        import trimesh
+
+        paint_root = self.model_dir / _VENDOR_DIR_NAME / "hy3dpaint"
+        code = (
+            "import sys;"
+            "sys.path.insert(0, sys.argv[1]);"
+            "from DifferentiableRenderer.mesh_utils import convert_obj_to_glb;"
+            "convert_obj_to_glb(sys.argv[2], sys.argv[3])"
+        )
+        try:
+            subprocess.run(
+                [sys.executable, "-c", code, str(paint_root), str(obj_path), str(glb_path)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except (subprocess.CalledProcessError, OSError) as exc:
+            detail = getattr(exc, "stderr", "") or str(exc)
+            print(f"[Hunyuan3D21Generator] bpy GLB conversion failed, "
+                  f"falling back to trimesh (PBR metallic-roughness may be lost):\n{detail}")
+
+        if glb_path.exists():
+            return trimesh.load(str(glb_path), force="mesh")
+        return trimesh.load(str(obj_path), force="mesh")
+
     def _check_texgen_extensions(self) -> None:
+        """Ensure the native PBR extensions are compiled — patching the vendored
+        source and building them automatically on first use if missing."""
         vendor = self.model_dir / _VENDOR_DIR_NAME / "hy3dpaint"
         if str(vendor) not in sys.path:
             sys.path.insert(0, str(vendor))
-        try:
-            from textureGenPipeline import Hunyuan3DPaintPipeline  # noqa: F401
-            # textureGenPipeline imports even without the native kernels, so
-            # explicitly require the compiled CUDA rasterizer used at runtime.
-            import custom_rasterizer_kernel  # noqa: F401
-        except (ImportError, OSError) as exc:
-            cr = vendor / "custom_rasterizer"
-            dr = vendor / "DifferentiableRenderer"
+
+        if self._texgen_built(vendor):
+            return
+
+        # Build before importing textureGenPipeline/MeshRender, so the relative
+        # `from .mesh_inpaint_processor import meshVerticeInpaint` succeeds.
+        self._build_texgen_extensions(vendor)
+
+        import importlib
+        importlib.invalidate_caches()
+        if not self._texgen_built(vendor):
             raise RuntimeError(
-                "Native extensions for PBR texture generation are not compiled.\n"
-                "They require MSVC C++ Build Tools and the CUDA Toolkit (nvcc).\n"
-                "Build them inside the extension venv with:\n\n"
-                f"  cd \"{cr}\"\n"
-                f"  pip install -e .\n\n"
-                f"  cd \"{dr}\"\n"
-                f"  bash compile_mesh_painter.sh    (Windows: compile mesh_inpaint_processor.cpp with cl.exe)\n\n"
-                "Note: on Windows the 2.1 texture extensions require Visual Studio Build "
-                "Tools + CUDA Toolkit 12.x, or the community Windows fork. Shape generation "
-                "works without them.\n\n"
-                f"Original error: {exc}"
-            ) from exc
+                "Native PBR texture extensions are still not importable after an "
+                "automatic build attempt. See the build log above for the failing step."
+            )
+
+    def _texgen_built(self, vendor: Path) -> bool:
+        """True if both native extensions are present (without importing the
+        heavier MeshRender, which binds mesh_inpaint at its own import time)."""
+        try:
+            import custom_rasterizer_kernel  # noqa: F401
+        except Exception:
+            return False
+        dr = vendor / "DifferentiableRenderer"
+        built = list(dr.glob("mesh_inpaint_processor*.pyd")) + list(dr.glob("mesh_inpaint_processor*.so"))
+        return bool(built)
+
+    def _build_texgen_extensions(self, vendor: Path) -> None:
+        print("[Hunyuan3D21Generator] Native PBR extensions missing — patching & building (one-time)…")
+        self._patch_native_sources(vendor)
+        env = self._build_env()
+        pip = [sys.executable, "-m", "pip"]
+        self._run_build(pip + ["install", "-q", "wheel", "pybind11", "ninja"],
+                        vendor, env, "install build tooling")
+
+        cr = vendor / "custom_rasterizer"
+        self._run_build([sys.executable, "setup.py", "build_ext", "--inplace"],
+                        cr, env, "compile custom_rasterizer")
+        # Non-editable install: setuptools' deprecated `develop` (pip install -e .)
+        # re-invokes the build with isolation and loses torch.
+        self._run_build(pip + ["install", ".", "--no-build-isolation", "--no-deps"],
+                        cr, env, "install custom_rasterizer")
+
+        dr = vendor / "DifferentiableRenderer"
+        self._write_inpaint_setup(dr)
+        self._run_build([sys.executable, "_build_inpaint.py", "build_ext", "--inplace"],
+                        dr, env, "compile mesh_inpaint_processor")
+        print("[Hunyuan3D21Generator] Native PBR extensions built.")
+
+    def _patch_native_sources(self, vendor: Path) -> None:
+        """Apply the MSVC/runtime portability patches idempotently."""
+        for rel, repls in _NATIVE_PATCHES.items():
+            path = vendor / rel
+            if not path.exists():
+                continue
+            text = path.read_text(encoding="utf-8")
+            new = text
+            for old, repl in repls:
+                if old in new:
+                    new = new.replace(old, repl)
+            if new != text:
+                path.write_text(new, encoding="utf-8")
+                print(f"[Hunyuan3D21Generator] Patched {rel}")
+
+    def _write_inpaint_setup(self, dr: Path) -> None:
+        (dr / "_build_inpaint.py").write_text(
+            "from setuptools import setup\n"
+            "from pybind11.setup_helpers import Pybind11Extension, build_ext\n"
+            "setup(name='mesh_inpaint_processor', cmdclass={'build_ext': build_ext},\n"
+            "      ext_modules=[Pybind11Extension('mesh_inpaint_processor',\n"
+            "          ['mesh_inpaint_processor.cpp'], cxx_std=17)])\n",
+            encoding="utf-8",
+        )
+
+    def _run_build(self, cmd, cwd: Path, env: dict, label: str) -> None:
+        import subprocess
+        print(f"[Hunyuan3D21Generator] {label}…")
+        proc = subprocess.run([str(c) for c in cmd], cwd=str(cwd), env=env,
+                              capture_output=True, text=True)
+        if proc.returncode != 0:
+            tail = "\n".join(((proc.stdout or "") + "\n" + (proc.stderr or "")).splitlines()[-25:])
+            raise RuntimeError(f"Build step '{label}' failed (exit {proc.returncode}):\n{tail}")
+
+    def _build_env(self) -> dict:
+        """Environment for compiling CUDA/C++ extensions. On Windows this loads
+        the MSVC x64 toolchain and CUDA Toolkit; elsewhere it assumes the
+        compilers are already on PATH."""
+        import subprocess
+        env = dict(os.environ)
+        if sys.platform != "win32":
+            return env
+
+        vcvars = self._find_vcvars()
+        cuda = self._find_cuda()
+        if vcvars is None or cuda is None:
+            raise RuntimeError(self._prereq_message(vcvars, cuda))
+
+        out = subprocess.run(f'"{vcvars}" >nul 2>&1 && set', shell=True,
+                             capture_output=True, text=True)
+        for line in out.stdout.splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                env[k] = v
+        env["CUDA_PATH"] = str(cuda)
+        env["CUDA_HOME"] = str(cuda)
+        env["PATH"] = str(cuda / "bin") + os.pathsep + env.get("PATH", "")
+        env["DISTUTILS_USE_SDK"] = "1"  # required by torch when VC env is pre-activated
+        return env
+
+    @staticmethod
+    def _find_vcvars():
+        import subprocess
+        pf86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+        vswhere = Path(pf86) / "Microsoft Visual Studio" / "Installer" / "vswhere.exe"
+        if not vswhere.exists():
+            return None
+        try:
+            out = subprocess.check_output(
+                [str(vswhere), "-latest", "-products", "*",
+                 "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+                 "-property", "installationPath"], text=True).strip()
+        except Exception:
+            return None
+        if not out:
+            return None
+        vcvars = Path(out) / "VC" / "Auxiliary" / "Build" / "vcvars64.bat"
+        return vcvars if vcvars.exists() else None
+
+    @staticmethod
+    def _find_cuda():
+        cp = os.environ.get("CUDA_PATH")
+        if cp and (Path(cp) / "bin" / "nvcc.exe").exists():
+            return Path(cp)
+        base = Path(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA")
+        if base.exists():
+            cands = sorted((d for d in base.iterdir() if (d / "bin" / "nvcc.exe").exists()),
+                           reverse=True)
+            if cands:
+                return cands[0]
+        return None
+
+    @staticmethod
+    def _prereq_message(vcvars, cuda) -> str:
+        missing = []
+        if vcvars is None:
+            missing.append("Visual Studio Build Tools 2022 (Desktop C++ / cl.exe)")
+        if cuda is None:
+            missing.append("CUDA Toolkit 12.x (nvcc)")
+        return (
+            "Cannot build the PBR native extensions — missing: " + ", ".join(missing) + ".\n"
+            "Install them from an elevated terminal, open a new shell, then retry:\n\n"
+            '  winget install --id Microsoft.VisualStudio.2022.BuildTools -e --override '
+            '"--quiet --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"\n'
+            "  winget install --id Nvidia.CUDA -e --version 12.8\n\n"
+            "Shape generation works without them."
+        )
 
     def _ensure_paint_weights(self) -> None:
         paint_dir = self.model_dir / _PAINT_SUBFOLDER

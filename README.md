@@ -62,6 +62,13 @@ Python minor version), `basicsr`, `realesrgan`, `pybind11`.
 
 ### Windows build (validated)
 
+> **Automated:** on the first PBR generation the extension applies the source
+> patches and compiles both native extensions automatically
+> (`generator._build_texgen_extensions`): it locates `vcvars64.bat` (via
+> `vswhere`) and the CUDA Toolkit, sets `DISTUTILS_USE_SDK=1`, and builds. If the
+> prerequisites below are missing it raises an error with the `winget` commands.
+> The steps below document what that automation does (and how to do it by hand).
+
 On Windows the upstream Linux build (`pip install -e .`, `compile_mesh_painter.sh`)
 does **not** work as-is. This is the procedure that was validated on
 **Python 3.11.9 + torch 2.7.0+cu128**:
@@ -129,6 +136,13 @@ does not):
   described above.
 - Out-of-memory during texture generation → lower **Texture Views** (6) and
   **Texture Resolution** (512), or disable PBR texture.
+- `DLL load failed while importing bpy` during texture generation: `bpy`'s
+  bundled DLLs conflict with an already-loaded torch/CUDA in the same process.
+  This extension handles it by importing `bpy` defensively in the vendored
+  `DifferentiableRenderer/mesh_utils.py` (try/except) and running the OBJ→GLB
+  conversion in a **separate subprocess** (`generator._obj_to_glb`), where bpy
+  loads cleanly. If the vendored source is re-downloaded, the `mesh_utils.py`
+  try/except patch must be re-applied.
 
 ## Upstream model sources
 
