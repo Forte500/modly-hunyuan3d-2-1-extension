@@ -266,22 +266,27 @@ class Hunyuan3D21Generator(BaseGenerator):
 
     def _check_texgen_extensions(self) -> None:
         vendor = self.model_dir / _VENDOR_DIR_NAME / "hy3dpaint"
+        if str(vendor) not in sys.path:
+            sys.path.insert(0, str(vendor))
         try:
-            if str(vendor) not in sys.path:
-                sys.path.insert(0, str(vendor))
             from textureGenPipeline import Hunyuan3DPaintPipeline  # noqa: F401
+            # textureGenPipeline imports even without the native kernels, so
+            # explicitly require the compiled CUDA rasterizer used at runtime.
+            import custom_rasterizer_kernel  # noqa: F401
         except (ImportError, OSError) as exc:
             cr = vendor / "custom_rasterizer"
             dr = vendor / "DifferentiableRenderer"
             raise RuntimeError(
                 "Native extensions for PBR texture generation are not compiled.\n"
+                "They require MSVC C++ Build Tools and the CUDA Toolkit (nvcc).\n"
                 "Build them inside the extension venv with:\n\n"
                 f"  cd \"{cr}\"\n"
                 f"  pip install -e .\n\n"
                 f"  cd \"{dr}\"\n"
-                f"  bash compile_mesh_painter.sh    (Windows: see compile_mesh_painter.bat)\n\n"
-                "Note: on Windows the 2.1 texture extensions require MSVC build tools "
-                "and may need the community Windows fork. Shape generation works without them.\n\n"
+                f"  bash compile_mesh_painter.sh    (Windows: compile mesh_inpaint_processor.cpp with cl.exe)\n\n"
+                "Note: on Windows the 2.1 texture extensions require Visual Studio Build "
+                "Tools + CUDA Toolkit 12.x, or the community Windows fork. Shape generation "
+                "works without them.\n\n"
                 f"Original error: {exc}"
             ) from exc
 

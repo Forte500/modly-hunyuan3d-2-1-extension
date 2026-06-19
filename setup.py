@@ -211,14 +211,29 @@ def setup(
     )
 
     # ------------------------------------------------------------------ #
-    # PBR texture dependencies (optional but small — the heavy native
-    # extensions are compiled lazily on first texture request).
+    # PBR texture dependencies. The native custom_rasterizer (CUDA) and
+    # mesh_inpaint_processor (C++) extensions still have to be compiled
+    # separately (MSVC + CUDA Toolkit) — see README.
     # ------------------------------------------------------------------ #
     print("[setup] Installing PBR texture support dependencies …")
     pip(venv, "install",
         "realesrgan",
+        "basicsr",
         "ninja",
+        "pybind11",
+        "xatlas",
+        "pygltflib",
     )
+    # bpy (Blender as a module) is required by hy3dpaint's mesh utils and is
+    # locked to the interpreter's minor version. 4.2.x ships cp311 wheels;
+    # adjust if Modly's embedded Python changes.
+    if not is_mac:
+        try:
+            pip(venv, "install", "bpy==4.2.0")
+        except subprocess.CalledProcessError:
+            print("[setup] WARNING: bpy==4.2.0 wheel unavailable for this Python; "
+                  "PBR texture (mesh conversion) will be unavailable until a "
+                  "compatible bpy is installed.")
 
     # ------------------------------------------------------------------ #
     # rembg (background removal)
