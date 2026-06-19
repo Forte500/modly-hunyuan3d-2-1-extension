@@ -79,10 +79,14 @@ class Hunyuan3D21Generator(BaseGenerator):
 
         subfolder = self.download_check if self.download_check else _SHAPE_SUBFOLDER
         print(f"[Hunyuan3D21Generator] Loading shape pipeline from {self.model_dir} (subfolder={subfolder})…")
+        # Hunyuan3D-2.1 ships the DiT shape model as `model.fp16.ckpt` only
+        # (no safetensors). use_safetensors=True would make from_single_file look
+        # for a non-existent `.safetensors` file, so load the ckpt directly.
         pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
             str(self.model_dir),
             subfolder=subfolder,
-            use_safetensors=True,
+            use_safetensors=False,
+            variant="fp16",
             device=device,
             dtype=dtype,
         )
