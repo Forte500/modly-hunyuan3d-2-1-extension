@@ -203,6 +203,11 @@ def setup(
         "omegaconf",
         "scipy",
         "scikit-image",
+        "timm",                 # required by hy3dshape moe_layers / image encoder
+        "torchdiffeq",          # required by the flow-matching scheduler
+        "pytorch-lightning>=2.0",  # base classes used by the DiT shape model
+        "pyyaml",
+        "imageio",
     )
 
     # ------------------------------------------------------------------ #
